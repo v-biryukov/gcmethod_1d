@@ -11,7 +11,6 @@ class mesh_1d
 	double left, right;
 	double h;
 	int nx;
-	std::vector<double> mesh;
 
     int N;
 
@@ -25,6 +24,14 @@ public:
 	int get_number_of_segments() {return nx;};
 	double get_left() {return left;};
 	double get_right() {return right;};
+
+    void set_mesh(double left, double right, double h)
+    {
+        this->left = left;
+        this->right = right;
+        this->h = h;
+        nx = static_cast<int>((right-left)/h + 0.5);
+    }
 };
 
 
@@ -99,13 +106,17 @@ class gcmethod_1d
     value get_u(const rvalue & w, int segnR, int segnL);
 
 	void save_to_vtk(std::string name);
+    void set_initial();
     value initial_conditions(double x) {
      return value(5.0*exp(-4.0*x*x), 5.0*exp(-4.0*x*x)* c[mesh.get_number_of_segments()/2-10]*rho[mesh.get_number_of_segments()/2-10]);}
      //if (x < -1.0 && x > -2.0) return value(3.0, 3.0 * c[mesh.get_number_of_segments()/2-10]*rho[mesh.get_number_of_segments()/2-10]); else return value(0.0, 0.0);}
     void set_params();
+    void set_one_border_params(double cl, double cr, double rl, double rr, double x0);
+    double find_divergence_q(std::string type, double cl, double cr, double rl, double rr);
 public:
     gcmethod_1d(mesh_1d & mesht, std::string path) : mesh(mesht) {read_from_file(path); init();}
 	void calculate();
+    void calculate_diverge_contour();
 
 };
 
@@ -119,34 +130,49 @@ void gcmethod_1d::init()
     main1.resize(mesh.get_number_of_points());
     additional0.resize(mesh.get_number_of_segments(), std::vector<value>(N-1));
     additional1.resize(mesh.get_number_of_segments(), std::vector<value>(N-1));
-	for (int i = 0; i < mesh.get_number_of_points(); i++ )
-	{
-        main0.at(i) = initial_conditions(mesh.get_point(i));
-	}
-	for (int i = 0; i < mesh.get_number_of_segments(); i++ )
-		for(int j = 0; j < N-1; j++)
-		{
-            additional0.at(i).at(j) = initial_conditions(mesh.get_additional_point(i, j));
-		}
+
+    set_initial();
 }
 
-void gcmethod_1d::set_params()
+void gcmethod_1d::set_initial()
+{
+    for (int i = 0; i < mesh.get_number_of_points(); i++ )
+    {
+        main0.at(i) = initial_conditions(mesh.get_point(i));
+    }
+    for (int i = 0; i < mesh.get_number_of_segments(); i++ )
+        for(int j = 0; j < N-1; j++)
+        {
+            additional0.at(i).at(j) = initial_conditions(mesh.get_additional_point(i, j));
+        }
+}
+
+void gcmethod_1d::set_one_border_params(double cl, double cr, double rl, double rr, double x0)
 {
     for (int i = 0; i < mesh.get_number_of_segments(); i++ )
     {
         double x = mesh.get_left() + i*h + h/2.0;
-        if (x < (mesh.get_left()+mesh.get_right())/2.0 && x > -4.8)
+        if (x < x0)
         {
-            c[i] = 1.0;
-            rho[i] = 1.0;
+            c[i] = cl;
+            rho[i] = rl;
         }
         else
         {
-            c[i] = 1.0;
-            rho[i] = 1.0;//6.75;(c=1)
+            c[i] = cr;
+            rho[i] = rr;
+            //6.75;(c=1)
             // c=0.8: 9.0-9.1,
         }
     }
+    c[0] = cr;
+    rho[0] = rr;
+}
+
+
+void gcmethod_1d::set_params()
+{
+    set_one_border_params(1,1,2,1, (mesh.get_left() + mesh.get_right())/2);
 }
 
 
@@ -236,6 +262,9 @@ void gcmethod_1d::step()
             additional1[i][j].s = additional0[i][j].s + temp.s;
 		}
 
+    main0.swap(main1);
+    additional0.swap(additional1);
+
 }
 
 rvalue gcmethod_1d::get_omega(const value & u, int segnR, int segnL)
@@ -323,10 +352,72 @@ void gcmethod_1d::calculate()
         if (i % saving_frequency == 0)
             save_to_vtk("out/out_" + std::to_string(i/saving_frequency) + ".vtk");
 		step();
-        main0.swap(main1);
-        additional0.swap(additional1);
 	}
     save_to_vtk("out/out_" + std::to_string(number_of_steps/saving_frequency) + ".vtk");
+}
+
+double gcmethod_1d::find_divergence_q(std::string type, double cl, double cr, double rl, double rr)
+{
+    double left = 0.00001;
+    double right = 200;
+    for (int k = 0; k < 20; k++)
+    {
+        if (type == "tau")
+            tau = (left + right)/2;
+        else if (type == "cl")
+            cl = (left + right)/2;
+        else if (type == "cr")
+            cr = (left + right)/2;
+        else if (type == "rl")
+            rl = (left + right)/2;
+        else if (type == "rr")
+            rr = (left + right)/2;
+
+
+        set_one_border_params(cl, cr, rl, rr, (mesh.get_left()+mesh.get_right())/2);
+        set_initial();
+        double max = 0;
+        for (int i = 0; i < number_of_steps; i++)
+        {
+            step();
+
+            max = 0;
+            for (int j = 0; j < main0.size(); j++)
+            {
+                if (main0.at(j).v > max)
+                    max = main0.at(j).v;
+            }
+            if (max > 20.0)
+                break;
+        }
+        if (max > 20)
+            right = (left + right)/2;
+        else
+            left = (left + right)/2;
+    }
+    return left;
+}
+
+void gcmethod_1d::calculate_diverge_contour()
+{
+    double cl = 1.0;
+    double cr = 1.0;
+    double rl = 1.0;
+    double rr = 10.0;
+
+    for ( double cl = 0.000001; cl <= 1.0; cl *= 10)
+    {
+        double diverge_t = find_divergence_q("tau", cl, cr, rl, rr);
+        //std::cout << "cr : " << cr << ", tau : " << diverge_t << ", q : " << diverge_t/h << std::endl;
+        std::cout << cl << " " << diverge_t/h << std::endl;
+    }
+
+    for ( double cl = 0.1; cl <= 22.0; cl > 0.9999 ? cl += 1.0 : cl += 0.1)
+    {
+        double diverge_t = find_divergence_q("tau", cl, cr, rl, rr);
+        //std::cout << "cr : " << cr << ", tau : " << diverge_t << ", q : " << diverge_t/h << std::endl;
+        std::cout << cl << " " << diverge_t/h << std::endl;
+    }
 }
 
 void gcmethod_1d::save_to_vtk(std::string name)
